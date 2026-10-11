@@ -3281,6 +3281,53 @@ def test_subgraph_checkpoint_true(
         assert len(checkpoints) == 1
 
 
+def test_durability_sync_without_checkpointer() -> None:
+    class State(TypedDict):
+        count: int
+
+    def add_one(state: State) -> State:
+        return {"count": state["count"] + 1}
+
+    builder = StateGraph(State)
+    builder.add_node("first", add_one)
+    builder.add_node("second", add_one)
+    builder.add_edge(START, "first")
+    builder.add_edge("first", "second")
+    graph = builder.compile()
+
+    with pytest.warns(UserWarning, match="`durability` has no effect"):
+        assert graph.invoke({"count": 0}, durability="sync") == {"count": 2}
+
+
+def test_durability_sync_with_checkpointer_persists_steps() -> None:
+    class State(TypedDict):
+        count: int
+
+    def add_one(state: State) -> State:
+        return {"count": state["count"] + 1}
+
+    builder = StateGraph(State)
+    builder.add_node("first", add_one)
+    builder.add_node("second", add_one)
+    builder.add_edge(START, "first")
+    builder.add_edge("first", "second")
+    checkpointer = InMemorySaver()
+    graph = builder.compile(checkpointer=checkpointer)
+    config: RunnableConfig = {"configurable": {"thread_id": "durability-sync"}}
+
+    assert graph.invoke({"count": 0}, config, durability="sync") == {"count": 2}
+
+    snapshot = graph.get_state(config)
+    assert snapshot.values == {"count": 2}
+    assert snapshot.next == ()
+    counts = [
+        checkpoint.checkpoint["channel_values"].get("count")
+        for checkpoint in checkpointer.list(config)
+    ]
+    assert 1 in counts
+    assert 2 in counts
+
+
 def test_subgraph_durability_inherited(durability: Durability) -> None:
     sync_checkpointer = InMemorySaver()
 
